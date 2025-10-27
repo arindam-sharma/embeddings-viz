@@ -36,19 +36,21 @@ def build_app() -> Dash:
                 include_values=True,
                 include_metadata=True,
             )
-            if vectors:
+                if vectors:
                 viz_holder["viz"].process_vectors_to_dataframes(vectors)
                 df0 = viz_holder["viz"].combined_df
-                if df0 is not None and "group_id" in df0.columns:
-                    counts0 = df0["group_id"].value_counts().to_dict()
+                color_field0 = viz_holder["viz"].field_config.get('color_field', 'group_id')
+                if df0 is not None and color_field0 and color_field0 in df0.columns:
+                    counts0 = df0[color_field0].value_counts().to_dict()
                     initial_options = [
                         {"label": f"{gid} ({cnt})", "value": gid} for gid, cnt in counts0.items()
                     ]
-                    color_map0 = viz_holder["viz"].build_color_map(df0.get("group_id"))
-                    # Legend with group_description if present
+                    color_map0 = viz_holder["viz"].build_color_map(df0.get(color_field0))
+                    # Legend with label_field if present
                     desc_map0 = {}
-                    if "group_description" in df0.columns:
-                        desc_map0 = df0.groupby("group_id")["group_description"].first().to_dict()
+                    label_field0 = viz_holder["viz"].field_config.get('label_field')
+                    if label_field0 and label_field0 in df0.columns:
+                        desc_map0 = df0.groupby(color_field0)[label_field0].first().to_dict()
                     for gid, cnt in counts0.items():
                         desc = desc_map0.get(gid)
                         label = (str(desc)[:100] + "…") if desc and len(str(desc)) > 100 else (str(desc) if desc else str(gid))
@@ -65,7 +67,7 @@ def build_app() -> Dash:
                     # Initial figure
                     initial_fig = viz_holder["viz"].create_3d_plot(
                         method="pca",
-                        color_by="group_id",
+                        color_by=color_field0,
                         show_group_labels=False,
                         show_cluster_regions=False,
                         display=False,
@@ -190,8 +192,9 @@ def build_app() -> Dash:
             return False, [], "No vectors found."
         viz_holder["viz"].process_vectors_to_dataframes(vectors)
         groups = []
-        if viz_holder["viz"].combined_df is not None and "group_id" in viz_holder["viz"].combined_df.columns:
-            counts = viz_holder["viz"].combined_df["group_id"].value_counts().to_dict()
+        color_field = viz_holder["viz"].field_config.get('color_field')
+        if viz_holder["viz"].combined_df is not None and color_field and color_field in viz_holder["viz"].combined_df.columns:
+            counts = viz_holder["viz"].combined_df[color_field].value_counts().to_dict()
             groups = [
                 {"label": f"{gid} ({cnt})", "value": gid} for gid, cnt in counts.items()
             ]
@@ -218,13 +221,17 @@ def build_app() -> Dash:
         if not loaded or viz is None or viz.combined_df is None:
             return go.Figure()
 
+        # Get configured fields
+        color_field = viz.field_config.get('color_field')
+        hover_field = viz.field_config.get('hover_field')
+        
         # Filter
         df = viz.combined_df.copy()
-        if groups_selected:
-            df = df[df.get("group_id").isin(groups_selected)]
-        if search_text:
+        if groups_selected and color_field and color_field in df.columns:
+            df = df[df[color_field].isin(groups_selected)]
+        if search_text and hover_field and hover_field in df.columns:
             try:
-                df = df[df.get("claim_text", "").str.contains(search_text, case=False, na=False)]
+                df = df[df[hover_field].astype(str).str.contains(search_text, case=False, na=False)]
             except Exception:
                 pass
 
@@ -236,7 +243,7 @@ def build_app() -> Dash:
 
         fig = viz.create_3d_plot(
             method=method,
-            color_by="group_id",
+            color_by=color_field,
             size_by=None,
             title=None,
             hover_data=None,

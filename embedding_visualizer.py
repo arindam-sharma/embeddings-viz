@@ -32,13 +32,21 @@ except ImportError:
     print("UMAP not available. Install with: pip install umap-learn")
 
 class IntegratedPineconeVisualizer:
-    def __init__(self, api_key: str, environment: str = None):
+    def __init__(self, api_key: str, environment: str = None, field_config: Optional[Dict[str, str]] = None):
         """
         Initialize the integrated Pinecone visualizer
         
         Args:
             api_key: Your Pinecone API key
             environment: Pinecone environment (optional for newer versions)
+            field_config: Optional dict to map field roles to column names:
+                {
+                    'color_field': 'group_id',      # Column for coloring/grouping
+                    'hover_field': 'claim_text',    # Column for hover text display
+                    'label_field': 'group_description',  # Column for labels
+                    'filter_field': 'brand_id'      # Column for filtering
+                }
+                If None, will auto-detect from available metadata columns
         """
         self.pc = Pinecone(api_key=api_key)
         self.vectors_df = None
@@ -48,6 +56,14 @@ class IntegratedPineconeVisualizer:
         self.vector_columns = []
         self.metadata_columns = []
         self.vector_matrix = None
+        
+        # Field configuration with defaults
+        self.field_config = field_config or {}
+        self.detected_fields = {
+            'categorical': [],  # Low cardinality fields suitable for grouping
+            'text': [],         # Text fields suitable for hover display
+            'numeric': []       # Numeric fields
+        }
         
     def fetch_vectors_with_metadata(
         self, 
@@ -178,18 +194,11 @@ class IntegratedPineconeVisualizer:
         print(f"Processed {len(vectors)} vectors with {len(self.vector_columns)} dimensions")
         print(f"Metadata fields: {self.metadata_columns}")
         
-        # Highlight group_id availability  
-        if 'group_id' in self.metadata_columns:
-            unique_groups = self.combined_df['group_id'].nunique()
-            print(f"Found {unique_groups} unique group IDs")
-        else:
-            print("Note: group_id not found in metadata")
+        # Auto-detect field types
+        self._auto_detect_field_types()
         
-        # Highlight claim_text availability
-        if 'claim_text' in self.metadata_columns:
-            print("Found claim_text for hover display")
-        else:
-            print("Note: claim_text not found in metadata")
+        # Apply field configuration with smart defaults
+        self._apply_field_config()
     
     def _flatten_metadata(self, metadata: Dict[str, Any], target_dict: Dict[str, Any], prefix: str = ""):
         """Recursively flatten nested metadata dictionaries"""
@@ -210,6 +219,97 @@ class IntegratedPineconeVisualizer:
             else:
                 # Simple value
                 target_dict[column_name] = value
+    
+    def _auto_detect_field_types(self):
+        """Auto-detect field types from metadata for smart defaults"""
+        if self.metadata_df is None or self.metadata_df.empty:
+            return
+        
+        for col in self.metadata_columns:
+            if col == 'id':
+                continue
+            
+            series = self.metadata_df[col]
+            n_unique = series.nunique()
+            n_total = len(series)
+            
+            # Categorize field types
+            if pd.api.types.is_numeric_dtype(series):
+                self.detected_fields['numeric'].append(col)
+            elif n_unique < 50 and n_unique / n_total < 0.5:  # Low cardinality
+                self.detected_fields['categorical'].append(col)
+            else:  # Likely text or high cardinality
+                # Check if it looks like text (has spaces, longer strings)
+                sample_values = series.dropna().astype(str).head(10)
+                if any(' ' in str(v) and len(str(v)) > 20 for v in sample_values):
+                    self.detected_fields['text'].append(col)
+                else:
+                    self.detected_fields['categorical'].append(col)
+        
+        print(f"\n🔍 Auto-detected fields:")
+        if self.detected_fields['categorical']:
+            print(f"  Categorical (suitable for grouping): {self.detected_fields['categorical']}")
+        if self.detected_fields['text']:
+            print(f"  Text (suitable for hover): {self.detected_fields['text']}")
+        if self.detected_fields['numeric']:
+            print(f"  Numeric: {self.detected_fields['numeric']}")
+    
+    def _apply_field_config(self):
+        """Apply field configuration with smart defaults"""
+        # Set color field (for grouping/coloring)
+        if 'color_field' not in self.field_config or not self.field_config['color_field']:
+            # Try common names first
+            for common in ['group_id', 'category', 'cluster', 'label', 'type']:
+                if common in self.metadata_columns:
+                    self.field_config['color_field'] = common
+                    break
+            # Otherwise use first categorical field
+            if 'color_field' not in self.field_config and self.detected_fields['categorical']:
+                self.field_config['color_field'] = self.detected_fields['categorical'][0]
+        
+        # Set hover field (for text display)
+        if 'hover_field' not in self.field_config or not self.field_config['hover_field']:
+            # Try common names first
+            for common in ['claim_text', 'text', 'content', 'description', 'message']:
+                if common in self.metadata_columns:
+                    self.field_config['hover_field'] = common
+                    break
+            # Otherwise use first text field
+            if 'hover_field' not in self.field_config and self.detected_fields['text']:
+                self.field_config['hover_field'] = self.detected_fields['text'][0]
+        
+        # Set label field (for group descriptions)
+        if 'label_field' not in self.field_config or not self.field_config['label_field']:
+            for common in ['group_description', 'label', 'name', 'title']:
+                if common in self.metadata_columns:
+                    self.field_config['label_field'] = common
+                    break
+        
+        print(f"\n⚙️  Field Configuration:")
+        print(f"  Color/Group by: {self.field_config.get('color_field', 'None')}")
+        print(f"  Hover text: {self.field_config.get('hover_field', 'None')}")
+        print(f"  Labels: {self.field_config.get('label_field', 'None')}")
+        
+    def get_available_fields(self) -> Dict[str, List[str]]:
+        """Get all available fields categorized by type"""
+        return {
+            'all': self.metadata_columns,
+            'categorical': self.detected_fields['categorical'],
+            'text': self.detected_fields['text'],
+            'numeric': self.detected_fields['numeric']
+        }
+    
+    def update_field_config(self, **kwargs):
+        """Update field configuration
+        
+        Args:
+            color_field: Column to use for coloring/grouping
+            hover_field: Column to use for hover text
+            label_field: Column to use for labels
+            filter_field: Column to use for filtering
+        """
+        self.field_config.update(kwargs)
+        print(f"\n✓ Updated field configuration: {kwargs}")
 
     def _wrap_for_hover(self, value: Any, width: int = 80, max_lines: int = 8) -> str:
         """Insert <br> line breaks into long strings for nicer hover labels."""
@@ -312,13 +412,18 @@ class IntegratedPineconeVisualizer:
         )
         return {val: palette[i % len(palette)] for i, val in enumerate(unique_vals)}
 
-    def create_3d_plot(self, method='pca', color_by='group_id', size_by=None, 
+    def create_3d_plot(self, method='pca', color_by=None, size_by=None, 
                        title=None, hover_data=None, save_html=None, show_group_labels=False,
                        show_cluster_regions: bool = False, cluster_opacity: float = 0.10, cluster_alphahull: int = 8,
                        display: bool = True, color_map: Optional[Dict[Any, str]] = None,
                        filter_ids: Optional[List[str]] = None):
         """
-        Create interactive 3D scatter plot with emphasis on group_id, showing claim_text on hover
+        Create interactive 3D scatter plot using configured fields
+        
+        Args:
+            color_by: Column to color by (defaults to configured color_field)
+            size_by: Column to size by
+            Other parameters remain the same
         """
         needs_reduce = (
             method not in self.reduced_data
@@ -342,27 +447,44 @@ class IntegratedPineconeVisualizer:
         plot_df['y'] = reduced[:, 1]
         plot_df['z'] = reduced[:, 2]
         
-        # Set up hover data with claim_text prominently featured (wrapped)
+        # Use configured color field if not specified
+        if color_by is None:
+            color_by = self.field_config.get('color_field')
+        
+        # Set up hover data using configured fields
         if hover_data is None:
             hover_data = ['id']
-            if 'claim_text' in plot_df.columns:
-                plot_df['claim_text_wrapped'] = plot_df['claim_text'].astype(str).apply(lambda s: self._wrap_for_hover(s, width=80, max_lines=8))
-                hover_data.append('claim_text_wrapped')
-            if 'group_id' in plot_df.columns:
-                hover_data.append('group_id')
+            
+            # Add configured hover field (text)
+            hover_field = self.field_config.get('hover_field')
+            if hover_field and hover_field in plot_df.columns:
+                wrapped_field = f'{hover_field}_wrapped'
+                plot_df[wrapped_field] = plot_df[hover_field].astype(str).apply(
+                    lambda s: self._wrap_for_hover(s, width=80, max_lines=8)
+                )
+                hover_data.append(wrapped_field)
+            
+            # Add color field to hover
+            if color_by and color_by in plot_df.columns:
+                hover_data.append(color_by)
+            
+            # Add any other interesting categorical fields
+            for field in self.detected_fields['categorical'][:3]:  # Limit to 3 more
+                if field not in hover_data and field in plot_df.columns:
+                    hover_data.append(field)
         
-        # Default to coloring by group_id if available
-        if color_by == 'group_id' and 'group_id' not in plot_df.columns:
-            print("group_id not found, using default coloring")
+        # Check if color field exists
+        if color_by and color_by not in plot_df.columns:
+            print(f"Warning: '{color_by}' not found in data, using default coloring")
             color_by = None
         
         # Prepare a stable color map so meshes match point colors
         local_color_map = color_map
-        if local_color_map is None and 'group_id' in plot_df.columns:
-            local_color_map = self.build_color_map(plot_df['group_id'])
+        if local_color_map is None and color_by and color_by in plot_df.columns:
+            local_color_map = self.build_color_map(plot_df[color_by])
 
         scatter_kwargs = {}
-        if color_by == 'group_id' and local_color_map is not None:
+        if color_by and local_color_map is not None:
             scatter_kwargs['color_discrete_map'] = local_color_map
 
         # Create the plot
@@ -380,8 +502,8 @@ class IntegratedPineconeVisualizer:
                 **scatter_kwargs
             )
             
-            # Customize colors for group_id
-            if color_by == 'group_id':
+            # Customize colors for categorical fields
+            if color_by:
                 fig.update_traces(
                     marker=dict(
                         size=8,
@@ -401,10 +523,10 @@ class IntegratedPineconeVisualizer:
                 **scatter_kwargs
             )
         
-        # Add group labels if requested and group_id is available
-        if show_group_labels and 'group_id' in plot_df.columns:
+        # Add group labels if requested and color field is available
+        if show_group_labels and color_by and color_by in plot_df.columns:
             # Calculate centroids for each group
-            group_centroids = plot_df.groupby('group_id')[['x', 'y', 'z']].mean()
+            group_centroids = plot_df.groupby(color_by)[['x', 'y', 'z']].mean()
             
             # Add text annotations for group centroids
             for group_name, centroid in group_centroids.iterrows():
@@ -420,8 +542,8 @@ class IntegratedPineconeVisualizer:
         
         # Optionally add faded cluster regions per group using Mesh3d (initially hidden unless requested)
         mesh_indices = []
-        if 'group_id' in plot_df.columns and len(plot_df) >= 4:
-            for gid, g in plot_df.groupby('group_id'):
+        if color_by and color_by in plot_df.columns and len(plot_df) >= 4:
+            for gid, g in plot_df.groupby(color_by):
                 if len(g) < 4:
                     continue
                 mesh_color = local_color_map.get(gid, '#95a5a6') if local_color_map else '#95a5a6'
@@ -438,7 +560,7 @@ class IntegratedPineconeVisualizer:
 
         # Build summary annotation text (top, no legend/title)
         num_points = len(plot_df)
-        num_groups = plot_df['group_id'].nunique() if 'group_id' in plot_df.columns else None
+        num_groups = plot_df[color_by].nunique() if color_by and color_by in plot_df.columns else None
         summary_bits = [f"{num_points} points"]
         if num_groups is not None:
             summary_bits.append(f"{num_groups} groups")
@@ -518,10 +640,18 @@ class IntegratedPineconeVisualizer:
             fig.show()
         return fig
     
-    def analyze_group_distributions(self, method='pca'):
-        """Analyze how group_id values are distributed in 3D space"""
-        if 'group_id' not in self.combined_df.columns:
-            print("group_id not found in metadata")
+    def analyze_group_distributions(self, method='pca', color_by=None):
+        """Analyze how groups/categories are distributed in 3D space
+        
+        Args:
+            method: Dimensionality reduction method
+            color_by: Column to group by (defaults to configured color_field)
+        """
+        if color_by is None:
+            color_by = self.field_config.get('color_field')
+        
+        if not color_by or color_by not in self.combined_df.columns:
+            print(f"Warning: '{color_by}' not found in metadata. Cannot analyze distributions.")
             return
         
         if method not in self.reduced_data:
@@ -535,10 +665,10 @@ class IntegratedPineconeVisualizer:
         analysis_df['y'] = reduced[:, 1]
         analysis_df['z'] = reduced[:, 2]
         
-        print("=== Group ID Analysis ===")
+        print(f"=== {color_by.title()} Distribution Analysis ===")
         
         # Group statistics
-        group_stats = analysis_df.groupby('group_id').agg({
+        group_stats = analysis_df.groupby(color_by).agg({
             'x': ['mean', 'std', 'count'],
             'y': ['mean', 'std'],
             'z': ['mean', 'std']
@@ -548,22 +678,28 @@ class IntegratedPineconeVisualizer:
         print(group_stats)
         
         # Calculate distances between group centroids
-        centroids = analysis_df.groupby('group_id')[['x', 'y', 'z']].mean()
+        centroids = analysis_df.groupby(color_by)[['x', 'y', 'z']].mean()
         
         print(f"\nFound {len(centroids)} unique groups:")
         for i, (group_name, centroid) in enumerate(centroids.iterrows()):
-            count = analysis_df[analysis_df['group_id'] == group_name].shape[0]
-            print(f"{i+1}. Group {group_name}: {count} vectors")
+            count = analysis_df[analysis_df[color_by] == group_name].shape[0]
+            print(f"{i+1}. {color_by} {group_name}: {count} vectors")
         
         # Create group-focused visualization
-        hover_data_analysis = ['id', 'group_id']
-        if 'claim_text' in analysis_df.columns:
-            analysis_df['claim_text_wrapped'] = analysis_df['claim_text'].astype(str).apply(lambda s: self._wrap_for_hover(s, width=80, max_lines=8))
-            hover_data_analysis.append('claim_text_wrapped')
+        hover_data_analysis = ['id', color_by]
+        
+        # Add configured hover field
+        hover_field = self.field_config.get('hover_field')
+        if hover_field and hover_field in analysis_df.columns:
+            wrapped_field = f'{hover_field}_wrapped'
+            analysis_df[wrapped_field] = analysis_df[hover_field].astype(str).apply(
+                lambda s: self._wrap_for_hover(s, width=80, max_lines=8)
+            )
+            hover_data_analysis.append(wrapped_field)
         
         fig = px.scatter_3d(
             analysis_df, x='x', y='y', z='z',
-            color='group_id',
+            color=color_by,
             hover_data=hover_data_analysis,
             size_max=10
         )
@@ -572,8 +708,8 @@ class IntegratedPineconeVisualizer:
         
         # Build and add summary annotation
         num_points = len(analysis_df)
-        num_groups = analysis_df['group_id'].nunique()
-        summary_text = f"{num_points} points · {num_groups} groups · {method.upper()}"
+        num_groups = analysis_df[color_by].nunique()
+        summary_text = f"{num_points} points · {num_groups} groups ({color_by}) · {method.upper()}"
 
         fig.update_layout(
             width=1920,
@@ -651,7 +787,7 @@ class IntegratedPineconeVisualizer:
             
             self.create_3d_plot(
                 method=method,
-                color_by='group_id',
+                color_by=None,  # Will use configured field
                 title=f'Vector Groups - {method.upper()}',
                 save_html=html_filename,
                 show_group_labels=False,
@@ -696,9 +832,10 @@ class IntegratedPineconeVisualizer:
             print("✓ Saved interactive HTML files")
         
         # Summary insights
-        if hasattr(self, 'combined_df') and 'group_id' in self.combined_df.columns:
-            n_groups = self.combined_df['group_id'].nunique()
-            print(f"✓ Found {n_groups} unique group IDs in the data")
+        color_field = self.field_config.get('color_field')
+        if hasattr(self, 'combined_df') and color_field and color_field in self.combined_df.columns:
+            n_groups = self.combined_df[color_field].nunique()
+            print(f"✓ Found {n_groups} unique values in '{color_field}'")
     
     def interactive_density_tuning(self, method='pca'):
         """

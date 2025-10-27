@@ -9,8 +9,12 @@ An interactive 3D visualization tool for exploring high-dimensional vector embed
   - Command-line Python API
   - Streamlit web app with dark mode
   - Dash web app with live controls
+- **Flexible Configuration**: 🆕 Automatically detects and adapts to your metadata structure
+  - Auto-detection of categorical, text, and numeric fields
+  - Smart defaults for grouping and hover text
+  - Dynamic field selection in web interfaces
 - **Group Analysis**: Automatic clustering and group-based coloring
-- **Metadata Support**: Rich hover information with claim text and custom metadata
+- **Metadata Support**: Rich hover information with any text field
 - **Density Clustering**: DBSCAN-based density analysis with auto-tuning
 - **Export Options**: Save visualizations as interactive HTML files
 - **TSV Export**: Export vectors and metadata to TSV files for further analysis
@@ -129,17 +133,86 @@ visualizer = IntegratedPineconeVisualizer(api_key=api_key)
 # Fetch vectors with metadata filtering
 vectors = visualizer.fetch_vectors_with_metadata(
     index_name="your-index-name",
-    metadata_filter={"brand_id": {"$eq": "your-brand-id"}},
+    metadata_filter={"category": {"$eq": "documents"}},
     top_k=1000
 )
 
-# Process and create visualizations
+# Process - automatically detects field types
 visualizer.process_vectors_to_dataframes(vectors)
+# Output:
+# 🔍 Auto-detected fields:
+#   Categorical: ['category', 'status', 'priority']
+#   Text: ['content', 'description']
+#   Numeric: ['score', 'timestamp']
+
+# Create visualization - uses smart defaults
 visualizer.create_3d_plot(
     method='pca',
-    color_by='group_id',
     save_html='output.html'
 )
+```
+
+### Working with Different Data Formats
+
+The visualizer automatically adapts to your metadata structure. Here are examples:
+
+#### Example 1: E-commerce Product Embeddings
+```python
+# Your metadata: {product_category, product_name, description, price}
+visualizer = IntegratedPineconeVisualizer(api_key=api_key)
+vectors = visualizer.fetch_vectors_with_metadata(
+    index_name="products-index",
+    top_k=1000
+)
+visualizer.process_vectors_to_dataframes(vectors)
+# Auto-detects:
+# - color_field: 'product_category' (categorical)
+# - hover_field: 'description' (text)
+
+# Or manually configure:
+visualizer.update_field_config(
+    color_field='product_category',
+    hover_field='product_name',
+    label_field='description'
+)
+```
+
+#### Example 2: Customer Support Tickets
+```python
+# Your metadata: {ticket_status, priority, subject, message, agent_id}
+visualizer = IntegratedPineconeVisualizer(
+    api_key=api_key,
+    field_config={
+        'color_field': 'ticket_status',
+        'hover_field': 'message',
+        'label_field': 'subject'
+    }
+)
+# Explicitly set fields from the start
+```
+
+#### Example 3: Research Papers
+```python
+# Your metadata: {category, title, abstract, authors, year}
+visualizer = IntegratedPineconeVisualizer(api_key=api_key)
+vectors = visualizer.fetch_vectors_with_metadata(
+    index_name="papers-index",
+    metadata_filter={"year": {"$gte": 2020}},
+    top_k=500
+)
+visualizer.process_vectors_to_dataframes(vectors)
+
+# See what was detected
+fields = visualizer.get_available_fields()
+print(f"Categorical: {fields['categorical']}")
+print(f"Text: {fields['text']}")
+
+# Customize if needed
+visualizer.update_field_config(
+    color_field='category',
+    hover_field='abstract'
+)
+visualizer.create_3d_plot(method='tsne', save_html='papers_viz.html')
 ```
 
 ### Advanced Usage
@@ -224,16 +297,69 @@ metadata_filter = {
 - Preserves both local and global structure
 - Requires `umap-learn` package
 
-## Expected Metadata Fields
+## Field Configuration
 
-The visualizer works best with the following metadata fields:
+### Automatic Detection 🤖
 
-- `group_id`: Identifier for grouping related vectors
-- `group_description`: Human-readable description of the group
-- `claim_text`: Text content displayed on hover
-- `brand_id`: For filtering by brand
+The visualizer automatically detects and categorizes your metadata fields:
 
-Additional metadata fields will be automatically flattened and included.
+- **Categorical fields** (low cardinality): Ideal for grouping/coloring
+  - Examples: `status`, `category`, `type`, `department`, `priority`
+- **Text fields** (longer content): Perfect for hover display
+  - Examples: `description`, `content`, `message`, `abstract`, `comment`
+- **Numeric fields**: Can be used for sizing or filtering
+  - Examples: `score`, `price`, `rating`, `timestamp`, `count`
+
+### Smart Defaults
+
+The tool looks for common field names in this order:
+
+**For coloring/grouping:**
+1. `group_id`, `category`, `cluster`, `label`, `type`
+2. Falls back to first detected categorical field
+
+**For hover text:**
+1. `claim_text`, `text`, `content`, `description`, `message`
+2. Falls back to first detected text field
+
+**For labels:**
+1. `group_description`, `label`, `name`, `title`
+
+### Manual Configuration
+
+You can always override the defaults:
+
+```python
+# Method 1: At initialization
+visualizer = IntegratedPineconeVisualizer(
+    api_key=api_key,
+    field_config={
+        'color_field': 'your_category_field',
+        'hover_field': 'your_text_field',
+        'label_field': 'your_label_field'
+    }
+)
+
+# Method 2: After initialization
+visualizer.update_field_config(
+    color_field='status',
+    hover_field='description'
+)
+
+# Method 3: In web interfaces (Streamlit/Dash)
+# Use the dropdown menus in the sidebar to select fields dynamically
+```
+
+### Inspect Available Fields
+
+```python
+# Get all detected fields
+fields = visualizer.get_available_fields()
+print(f"All metadata fields: {fields['all']}")
+print(f"Categorical (good for grouping): {fields['categorical']}")
+print(f"Text (good for hover): {fields['text']}")
+print(f"Numeric: {fields['numeric']}")
+```
 
 ## Output Files
 
@@ -252,6 +378,22 @@ Additional metadata fields will be automatically flattened and included.
 - Check your index name is correct
 - Verify your API key is valid
 - Ensure your metadata filter matches existing data
+
+### No categorical fields detected
+If all your fields are detected as "text":
+```python
+# Manually specify which field to use for grouping
+visualizer.update_field_config(color_field='your_category_field')
+```
+
+### Field not showing in hover
+Check the field is detected as a text field:
+```python
+fields = visualizer.get_available_fields()
+print(fields['text'])
+# If not listed, manually set it:
+visualizer.update_field_config(hover_field='your_field')
+```
 
 ### UMAP not available
 ```bash

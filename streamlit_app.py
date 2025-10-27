@@ -45,7 +45,7 @@ def fetch_and_prepare(_viz: IntegratedPineconeVisualizer, index_name: str, metad
     return vectors, _viz.combined_df.copy()
 
 
-def sidebar_controls(df: pd.DataFrame):
+def sidebar_controls(df: pd.DataFrame, viz: IntegratedPineconeVisualizer):
     st.sidebar.header("Controls")
 
     method = st.sidebar.radio("Method", options=["pca", "tsne", "umap"], index=0, horizontal=True, key="method_radio")
@@ -55,39 +55,80 @@ def sidebar_controls(df: pd.DataFrame):
     opacity = st.sidebar.slider("Opacity", 0.2, 1.0, 0.85, 0.05)
     dark = st.sidebar.toggle("Dark mode", value=False)
 
-    search = st.sidebar.text_input("Search claim_text")
+    # Field Configuration Section
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("Field Configuration")
+    
+    # Get available fields
+    available_fields = viz.get_available_fields()
+    all_fields = available_fields.get('all', [])
+    categorical_fields = available_fields.get('categorical', [])
+    text_fields = available_fields.get('text', [])
+    
+    # Select color/group field
+    current_color = viz.field_config.get('color_field', '')
+    color_idx = categorical_fields.index(current_color) if current_color in categorical_fields else 0
+    color_field = st.sidebar.selectbox(
+        "🎨 Color/Group by",
+        options=categorical_fields if categorical_fields else all_fields,
+        index=color_idx if categorical_fields else 0,
+        help="Select which field to use for coloring and grouping",
+        key="color_field_select"
+    )
+    
+    # Select hover text field
+    current_hover = viz.field_config.get('hover_field', '')
+    hover_options = text_fields if text_fields else all_fields
+    hover_idx = hover_options.index(current_hover) if current_hover in hover_options else 0
+    hover_field = st.sidebar.selectbox(
+        "💬 Hover text",
+        options=hover_options,
+        index=hover_idx if hover_options else 0,
+        help="Select which field to display on hover",
+        key="hover_field_select"
+    )
+    
+    # Update visualizer config if changed
+    if color_field != current_color or hover_field != current_hover:
+        viz.update_field_config(color_field=color_field, hover_field=hover_field)
+    
+    st.sidebar.markdown("---")
+    
+    # Search field - use configured hover field
+    search = st.sidebar.text_input(f"Search {hover_field or 'text'}")
 
+    # Group filter - use configured color field
     groups_selected: List[str] = []
-    if df is not None and "group_id" in df.columns:
-        # Build labels using group_description where available
+    if df is not None and color_field and color_field in df.columns:
+        # Build labels using label_field if available
         options = []
-        counts = df["group_id"].value_counts().to_dict()
+        counts = df[color_field].value_counts().to_dict()
         desc_map: Dict[str, str] = {}
-        if "group_description" in df.columns:
-            desc_map = df.groupby("group_id")["group_description"].first().to_dict()
+        label_field = viz.field_config.get('label_field')
+        if label_field and label_field in df.columns:
+            desc_map = df.groupby(color_field)[label_field].first().to_dict()
         for gid, cnt in counts.items():
             label = truncate(desc_map.get(gid), 100) if gid in desc_map else str(gid)
             options.append((f"{label} ({cnt})", gid))
         labels = [label for label, _ in options]
-        values = [gid for _, gid in options]
-        pick = st.sidebar.multiselect("Filter groups", labels, default=[], key="groups_multi")
+        pick = st.sidebar.multiselect(f"Filter {color_field}", labels, default=[], key="groups_multi")
         label_to_gid = dict(options)
         groups_selected = [label_to_gid[p] for p in pick]
 
-    return method, camera_preset, regions, size, opacity, dark, search, groups_selected
+    return method, camera_preset, regions, size, opacity, dark, search, groups_selected, color_field, hover_field
 
 
-def render_plot(viz: IntegratedPineconeVisualizer, df: pd.DataFrame, method: str, camera_preset: str, regions: bool, size: int, opacity: float, dark: bool):
+def render_plot(viz: IntegratedPineconeVisualizer, df: pd.DataFrame, method: str, camera_preset: str, regions: bool, size: int, opacity: float, dark: bool, color_field: str):
     # Temporarily swap combined_df for plotting
     original = viz.combined_df
     viz.combined_df = df
 
     # Stable colors
-    color_map = viz.build_color_map(df.get("group_id")) if df is not None else None
+    color_map = viz.build_color_map(df.get(color_field)) if df is not None and color_field in df.columns else None
 
     fig = viz.create_3d_plot(
         method=method,
-        color_by="group_id",
+        color_by=color_field,
         save_html=None,
         show_group_labels=False,
         show_cluster_regions=regions,
@@ -168,25 +209,31 @@ else:
 
 
 if viz is not None and combined_df is not None and not combined_df.empty:
+    # Get field configuration
+    color_field = viz.field_config.get('color_field', '')
+    hover_field = viz.field_config.get('hover_field', '')
+    
     # Summary chips
     total_pts = len(combined_df)
-    total_groups = combined_df["group_id"].nunique() if "group_id" in combined_df.columns else 0
+    total_groups = combined_df[color_field].nunique() if color_field and color_field in combined_df.columns else 0
     c1, c2, c3 = st.columns(3)
     c1.metric("Points", f"{total_pts}")
     c2.metric("Groups", f"{total_groups}")
-    method, camera_preset, regions, size, opacity, dark, search, groups_selected = sidebar_controls(combined_df)
+    c3.metric("Color by", color_field or "None")
+    
+    method, camera_preset, regions, size, opacity, dark, search, groups_selected, color_field, hover_field = sidebar_controls(combined_df, viz)
 
     # Filter
     filtered = combined_df
-    if groups_selected:
-        filtered = filtered[filtered.get("group_id").isin(groups_selected)]
-    if search:
+    if groups_selected and color_field in filtered.columns:
+        filtered = filtered[filtered[color_field].isin(groups_selected)]
+    if search and hover_field and hover_field in filtered.columns:
         try:
-            filtered = filtered[filtered.get("claim_text", "").str.contains(search, case=False, na=False)]
+            filtered = filtered[filtered[hover_field].astype(str).str.contains(search, case=False, na=False)]
         except Exception:
             pass
 
-    fig = render_plot(viz, filtered, method, camera_preset, regions, size, opacity, dark)
+    fig = render_plot(viz, filtered, method, camera_preset, regions, size, opacity, dark, color_field)
     st.plotly_chart(fig, use_container_width=True, config={"displaylogo": False})
 
     # Export current figure
