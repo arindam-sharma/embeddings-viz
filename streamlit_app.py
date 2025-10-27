@@ -172,7 +172,7 @@ def render_plot(viz: IntegratedPineconeVisualizer, df: pd.DataFrame, method: str
 st.title("Embeddings Explorer")
 with st.sidebar:
     st.subheader("Connection")
-    default_index = os.getenv("PINECONE_INDEX", "content-gen-claim-index")
+    default_index = os.getenv("PINECONE_INDEX", "my-index")
     default_key = os.getenv("PINECONE_API_KEY", "")
     index_name = st.text_input("Index", value=default_index)
     api_key = st.text_input("PINECONE_API_KEY", value=default_key, type="password")

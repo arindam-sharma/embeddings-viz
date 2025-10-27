@@ -15,7 +15,7 @@ def build_app() -> Dash:
     app = Dash(__name__)
 
     # Initial configuration
-    default_index = os.getenv("PINECONE_INDEX", "content-gen-claim-index")
+    default_index = os.getenv("PINECONE_INDEX", "my-index")
     default_api_key = os.getenv("PINECONE_API_KEY", "")
 
     # Create the visualizer lazily after API key is provided
@@ -36,7 +36,7 @@ def build_app() -> Dash:
                 include_values=True,
                 include_metadata=True,
             )
-                if vectors:
+            if vectors:
                 viz_holder["viz"].process_vectors_to_dataframes(vectors)
                 df0 = viz_holder["viz"].combined_df
                 color_field0 = viz_holder["viz"].field_config.get('color_field', 'group_id')

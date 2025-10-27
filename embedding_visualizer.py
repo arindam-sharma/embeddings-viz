@@ -873,7 +873,7 @@ def main():
     """
     # Load configuration from environment variables
     API_KEY = os.getenv("PINECONE_API_KEY")
-    INDEX_NAME = os.getenv("PINECONE_INDEX_NAME", "content-gen-claim-index")
+    INDEX_NAME = os.getenv("PINECONE_INDEX_NAME", "my-index")
     BRAND_ID = os.getenv("BRAND_ID")
     
     if not API_KEY:
